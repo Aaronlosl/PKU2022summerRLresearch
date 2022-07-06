@@ -20,7 +20,7 @@ parser.add_argument("--vmin", type=int, default=-50, help="set the vmin")
 parser.add_argument("--N", type=int, default=51, help="set the numbers of the atoms")
 parser.add_argument("--eps", type=float, default=0.1, help="set the epsilon")
 parser.add_argument("--gamma", type=float, default=0.75, help="set the gamma")
-parser.add_argument("--alpha", type=float, default=0.001, help="set the learning rate")
+parser.add_argument("--alpha", type=float, default=0.005, help="set the learning rate")
 parser.add_argument("--capacity", type=int, default=10000, help="the capability of the memory buffer")
 parser.add_argument("--step", type=int, default=300, help="the frequency of training")
 parser.add_argument("--freq", type=int, default=1000, help="the frequency of update the model")
@@ -71,9 +71,10 @@ class C51agent:
             E = []
             for i in range(self.n_actions):
                 E.append(self.target_model(state)[i] * torch.tensor(self.Z, dtype=torch.float32))
+
             E = torch.vstack(E)
             E = E.sum(dim=1)
-        return E.argmax()
+        return rand_argmax(E)
 
     def get_action(self, state):
         rand = torch.rand(1)
@@ -86,11 +87,12 @@ class C51agent:
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train_replay(self, memory, batch_size):
+        # print("enter here")
         num_samples = min(batch_size * 40, len(memory))
         replay_samples = random.sample(memory, num_samples)
-        loss = torch.zeros(1, dtype=torch.float32)
         # Project Next State Value Distribution (of optimal action) to Current State
         for i in range(num_samples):
+            loss = torch.zeros(1, dtype=torch.float32)
             m_prob = torch.zeros([self.N], dtype=torch.float32, requires_grad=False)
             # Get Optimal Actions for the next states (from distribution z)
             z = self.model(replay_samples[i]['s_'])
@@ -116,15 +118,17 @@ class C51agent:
             acts = torch.full([1, self.N], a, dtype=torch.int64)
             rz = rz.gather(0, acts).reshape(51)"""
 
-            print(rz)
+            # print(replay_samples[i])
+            # print("rz:")
+            # print(rz)
             loss += f.kl_div(torch.log(rz), m_prob)
-            print(loss)
+            # print("loss:")
+            # print(loss)
 
             self.optimizer.zero_grad()
             loss.backward(retain_graph=True)  # 误差反向传播
-
             self.optimizer.step()
-            print('finish')
+            # print('finish')
 
 
 class Multi_C51:
@@ -163,7 +167,9 @@ class Multi_C51:
             self.update_target_models()
 
     def update_target_models(self):
+        print("updating")
         for agent in self.c51agents:
+            print(agent.model(0))
             agent.update_target_model()
 
     def save_checkpoint(self, folder_name, t):
@@ -178,7 +184,13 @@ class Multi_C51:
 
     def train_replay(self):
         for agent in self.c51agents:
+            # print("enter agent" + str(agent.idx) + " !!!")
             agent.train_replay(self.memory, self.batch_size)
+
+
+def rand_argmax(tens):
+    max_idxs, = torch.where(tens == tens.max())
+    return np.random.choice(max_idxs)
 
 
 args = parser.parse_args()
@@ -200,7 +212,7 @@ def train():
 
             t += 1
             multi_c51.store_transition(s, a, r, s_, done, t)  # dqn存储现在的状态，行为，反馈，和环境导引的下一个状态
-            print((s, a, r, s_, done, t))
+            # print((s, a, r, s_, done, t))
             ep_r += r
 
             if t % time_step == 0:
