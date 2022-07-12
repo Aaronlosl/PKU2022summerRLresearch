@@ -20,7 +20,7 @@ parser.add_argument("--vmin", type=int, default=-50, help="set the vmin")
 parser.add_argument("--N", type=int, default=51, help="set the numbers of the atoms")
 parser.add_argument("--eps", type=float, default=0.1, help="set the epsilon")
 parser.add_argument("--gamma", type=float, default=0.75, help="set the gamma")
-parser.add_argument("--alpha", type=float, default=0.005, help="set the learning rate")
+parser.add_argument("--alpha", type=float, default=0.01, help="set the learning rate")
 parser.add_argument("--capacity", type=int, default=10000, help="the capability of the memory buffer")
 parser.add_argument("--step", type=int, default=300, help="the frequency of training")
 parser.add_argument("--freq", type=int, default=1000, help="the frequency of update the model")
@@ -91,14 +91,16 @@ class C51agent:
         num_samples = min(batch_size * 40, len(memory))
         replay_samples = random.sample(memory, num_samples)
         # Project Next State Value Distribution (of optimal action) to Current State
+        loss = torch.zeros(1, dtype=torch.float32)
         for i in range(num_samples):
-            loss = torch.zeros(1, dtype=torch.float32)
             m_prob = torch.zeros([self.N], dtype=torch.float32, requires_grad=False)
             # Get Optimal Actions for the next states (from distribution z)
-            z = self.model(replay_samples[i]['s_'])
-            z_1 = self.model(replay_samples[i]['s_'])
-            z_ = [i.detach() for i in z_1]
-            opt_action = self.get_opt_action(replay_samples[i]['s_'])
+            z = self.model(replay_samples[i]['s_'])  # should be updated model
+            # zd = [i.detach() for i in z]  # detach version of model should be updated
+
+            z_ = self.target_model(replay_samples[i]['s_'])  # locked model
+            z_d = [i.detach() for i in z_]  # detach version of locked model
+            opt_action = self.get_opt_action(replay_samples[i]['s_'])  # opt action from the locked model
             if replay_samples[i]['done']:  # Terminal State
                 # Distribution collapses to a single point
                 Tz = min(self.v_max, max(self.v_min, replay_samples[i]['r']))
@@ -108,7 +110,8 @@ class C51agent:
                 m_prob[int(m_u)] += (bj - m_l)
             else:
                 for j in range(self.N):
-                    Tz = min(self.v_max, max(self.v_min, replay_samples[i]['r'] + self.gamma * z[opt_action][j]).detach())
+                    Tz = min(self.v_max,
+                             max(self.v_min, replay_samples[i]['r'] + self.gamma * z_d[opt_action][j]))
                     bj = (Tz - self.v_min) / self.deltaZ
                     m_l, m_u = math.floor(bj), math.ceil(bj)
                     m_prob[int(m_l)] += z_[opt_action][j] * (m_u - bj)
@@ -124,11 +127,10 @@ class C51agent:
             loss += f.kl_div(torch.log(rz), m_prob)
             # print("loss:")
             # print(loss)
-
-            self.optimizer.zero_grad()
-            loss.backward(retain_graph=True)  # 误差反向传播
-            self.optimizer.step()
-            # print('finish')
+        self.optimizer.zero_grad()
+        loss.backward(retain_graph=True)  # 误差反向传播
+        self.optimizer.step()
+        # print('finish')
 
 
 class Multi_C51:
@@ -153,6 +155,10 @@ class Multi_C51:
         self.max_memory = 50000
         self.update_target_freq = utf
 
+    def get_joint_opt_action(self, state):
+        actions = [agent.get_opt_action(state) for agent in self.c51agents]
+        return actions
+
     def get_joint_action(self, state):
         actions = [agent.get_action(state) for agent in self.c51agents]
         return actions
@@ -167,9 +173,9 @@ class Multi_C51:
             self.update_target_models()
 
     def update_target_models(self):
-        print("updating")
+        # print("updating")
         for agent in self.c51agents:
-            print(agent.model(0))
+            # print(agent.model(0))
             agent.update_target_model()
 
     def save_checkpoint(self, folder_name, t):
@@ -186,6 +192,29 @@ class Multi_C51:
         for agent in self.c51agents:
             # print("enter agent" + str(agent.idx) + " !!!")
             agent.train_replay(self.memory, self.batch_size)
+
+
+def test(multi_c51):
+    env = Env.chooce_the_game(args.dataset)
+    s = env.reset()
+    ep_r = 0
+    for i in range(10):
+        while True:
+            a = multi_c51.get_joint_opt_action(s)  # 根据dqn来接受现在的状态，得到一个行为
+            s_, r, done = env.step(a)  # 根据环境的行为，给出一个反馈
+
+            # multi_c51.store_transition(s, a, r, s_, done, t)  # dqn存储现在的状态，行为，反馈，和环境导引的下一个状态
+            # print((s, a, r, s_, done, t))
+            ep_r += r
+
+            if done:
+                break
+            s = s_  # 现在的状态赋值到下一个状态上去
+    ep_r /= 10
+    print("total reward %f" % ep_r)
+    print("peek the pi")
+    for i in range(env.agent_num):
+        print(multi_c51.c51agents[i].model(torch.randint(env.state_num, size=[1]))[torch.randint(env.action_num, size=[1])])
 
 
 def rand_argmax(tens):
@@ -224,7 +253,8 @@ def train():
 
         if i % 100 == 0:
             multi_c51.save_checkpoint(args.path, t)
-            print("at episode %d, with total reward %f" % (i, ep_r))
+            print("at episode %d" % i)
+            test(multi_c51)
 
 
 if __name__ == "__main__":

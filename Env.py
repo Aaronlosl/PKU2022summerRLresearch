@@ -54,8 +54,8 @@ class MatrixGame:
     def reset(self):
         self.now_state = self.init_state
         self.step_count = 0
-        s = self.get_state()
-        return s
+        # s = self.get_state()
+        return self.now_state
 
     def get_ac_idx(self, action):
         idx = 0
@@ -84,7 +84,24 @@ class MatrixGame:
         self.now_state = next_state
         self.step_count += 1
 
-        return self.get_state(), r, self.step_count >= self.max_episode_length
+        # return self.get_state(), r, self.step_count >= self.max_episode_length
+        return self.now_state, r, self.step_count >= self.max_episode_length
+
+    def get_env_info(self):
+        env_info = {"n_actions": self.action_num, "n_agents": self.agent_num, "state_shape": self.state_num,
+                    "obs_shape": self.state_num, "episode_limit": self.max_episode_length}
+        return env_info
+
+    def get_model_info(self, state, action):
+        sa_index = [state]
+        action = np.array(action)
+        # print('action = {}'.format(action))
+        for a in action:
+            sa_index.append(a)
+        r = get_element(self.r_mat, sa_index)
+        next_s_prob = get_element(self.trans_mat, sa_index)
+        # print('action = {} sa_index = {} self.trans_mat = {} next_s_prob = {}'.format(action,sa_index,self.trans_mat.shape, next_s_prob.shape  ))
+        return r,next_s_prob
 
 
 if __name__ == '__main__':
