@@ -15,18 +15,19 @@ parser.add_argument("--train", action="store_true", default=True, help="train th
 parser.add_argument("--test", action="store_true", default=False, help="test the model")
 parser.add_argument("--path", type=str, default='pure_c51', help="save folder path or the test model path")
 parser.add_argument("--dataset", type=int, default=0, help="choose the model")
-parser.add_argument("--vmax", type=int, default=50, help="set the vmax")
-parser.add_argument("--vmin", type=int, default=-50, help="set the vmin")
+parser.add_argument("--vmax", type=int, default=20, help="set the vmax")
+parser.add_argument("--vmin", type=int, default=-20, help="set the vmin")
 parser.add_argument("--N", type=int, default=51, help="set the numbers of the atoms")
 parser.add_argument("--eps", type=float, default=0.25, help="set the epsilon")
 parser.add_argument("--gamma", type=float, default=0.95, help="set the gamma")
 parser.add_argument("--alpha", type=float, default=1, help="set the learning rate")
-parser.add_argument("--capacity", type=int, default=10000, help="the capability of the memory buffer")
-parser.add_argument("--step", type=int, default=100, help="the frequency of training")
-parser.add_argument("--freq", type=int, default=500, help="the frequency of update the model")
+parser.add_argument("--capacity", type=int, default=100000, help="the capability of the memory buffer")
+parser.add_argument("--step", type=int, default=20, help="the frequency of training")
+parser.add_argument("--freq", type=int, default=100, help="the frequency of update the model")
 parser.add_argument("--episode", type=int, default=200000, help="set episode rounds")
 parser.add_argument("--ucb", type=float, default=0.85, help="set the upper confidence bound")
 parser.add_argument("--verbose", action='store_true', default=False, help="print verbose test process")
+parser.add_argument("--GPU", action="store_false", default=True, help="use cuda core")
 
 
 # in tabular case state=30, actions=5, agents=3
@@ -118,7 +119,7 @@ class C51agent:
         z_next = self.target_model(b_s_).detach()  # (m, N_ACTIONS, N_ATOM)
         z_next = z_next.numpy()
         range_value = np.array(self.Z, dtype=float)
-
+        z_range = np.array(self.Z, dtype=float)
         q_next_mean = np.sum(z_next * range_value, axis=2)  # (m, N_ACTIONS)
         opt_act = np.max(q_next_mean, axis=1)  # (batch_size)
         opt_act = opt_act.astype(int)
@@ -138,7 +139,7 @@ class C51agent:
                 for j in range(self.N):
                     # print("{} {} {}".format(i, opt_act[i], j))
                     Tz = min(self.v_max,
-                             max(self.v_min, b_r[i] + self.gamma * z_next[i, opt_act[i], j]))
+                             max(self.v_min, b_r[i] + self.gamma * z_range[j]))
 
                     bj = (Tz - self.v_min) / self.deltaZ
                     m_l, m_u = math.floor(bj), math.ceil(bj)
