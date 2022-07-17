@@ -14,23 +14,27 @@ parser = argparse.ArgumentParser(description="test c51 for the independence mult
 parser.add_argument("--train", action="store_true", default=True, help="train the model")
 parser.add_argument("--test", action="store_true", default=False, help="test the model")
 parser.add_argument("--path", type=str, default='pure_c51', help="save folder path or the test model path")
+parser.add_argument("--modelname", type=str, default='testmodel', help="saving model name")
 parser.add_argument("--dataset", type=int, default=0, help="choose the model")
-parser.add_argument("--vmax", type=int, default=20, help="set the vmax")
-parser.add_argument("--vmin", type=int, default=-20, help="set the vmin")
+parser.add_argument("--vmax", type=int, default=5, help="set the vmax")
+parser.add_argument("--vmin", type=int, default=-5, help="set the vmin")
 parser.add_argument("--N", type=int, default=51, help="set the numbers of the atoms")
 parser.add_argument("--eps", type=float, default=0.25, help="set the epsilon")
-parser.add_argument("--gamma", type=float, default=0.95, help="set the gamma")
-parser.add_argument("--alpha", type=float, default=1, help="set the learning rate")
-parser.add_argument("--capacity", type=int, default=100000, help="the capability of the memory buffer")
-parser.add_argument("--step", type=int, default=20, help="the frequency of training")
-parser.add_argument("--freq", type=int, default=100, help="the frequency of update the model")
-parser.add_argument("--episode", type=int, default=200000, help="set episode rounds")
+parser.add_argument("--gamma", type=float, default=0.5, help="set the gamma")
+parser.add_argument("--Lr", type=float, default=0.1, help="set the learning rate")
+parser.add_argument("--cap", type=int, default=1, help="the capability of the memory buffer")
+parser.add_argument("--step", type=int, default=1, help="the frequency of training")
+parser.add_argument("--freq", type=int, default=1, help="the frequency of update the model")
+parser.add_argument("--episode", type=int, default=100000, help="set episode rounds")
 parser.add_argument("--ucb", type=float, default=0.85, help="set the upper confidence bound")
 parser.add_argument("--verbose", action='store_true', default=False, help="print verbose test process")
 parser.add_argument("--GPU", action="store_false", default=True, help="use cuda core")
+parser.add_argument("--batchsize", type=int, default=1, help="learning batchsize")
 
 
 # in tabular case state=30, actions=5, agents=3
+
+test_flg = False
 
 class Q_table(nn.Module):
     """
@@ -64,11 +68,11 @@ class C51agent:
         self.deltaZ = (v_max - v_min) / float(N - 1)
         self.Z = [v_min + i * self.deltaZ for i in range(N)]
         self.gamma = gamma
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=alpha)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=alpha)
         self.idx = idx
 
     def save_checkpoint(self, folder, idx):
-        torch.save(self.model.state_dict(), folder + '/model%d.pkl' % idx)
+        torch.save(self.model.state_dict(), folder + '/agent%d.pkl' % idx)
 
     def get_opt_action(self, state):
         with torch.no_grad():
@@ -83,7 +87,8 @@ class C51agent:
             Q = Q * torch.tensor(self.Z, dtype=torch.float32)
             Q = torch.squeeze(Q, 0)
             Q = Q.sum(dim=1)
-        return rand_argmax(Q)
+
+        return Q.argmax()
 
     def get_action(self, state):
         rand = torch.rand(1)
@@ -120,10 +125,16 @@ class C51agent:
         z_next = z_next.numpy()
         range_value = np.array(self.Z, dtype=float)
         z_range = np.array(self.Z, dtype=float)
+        z_range = z_range * self.gamma
         q_next_mean = np.sum(z_next * range_value, axis=2)  # (m, N_ACTIONS)
-        opt_act = np.max(q_next_mean, axis=1)  # (batch_size)
+        opt_act = np.argmax(q_next_mean, axis=1)  # (batch_size)
         opt_act = opt_act.astype(int)
         m_prob = np.zeros([num_samples, self.N])
+        global test_flg
+        if test_flg:
+            print("prev z: {}".format(z_eval))
+            print("prev q: {}".format((z_eval*torch.tensor(self.Z)).sum()))
+            print("transition: [s:{}, r:{}, a:{}, s_{}, done:{}]".format(b_s[0].argmax(), b_r[0], b_a[0].argmax(), b_s_[0].argmax(), b_d_[0]))
         for i in range(num_samples):
             # Get Optimal Actions for the next states (from distribution z)
             # z = self.model(replay_samples[i]['s_'])  # should be updated model
@@ -139,7 +150,7 @@ class C51agent:
                 for j in range(self.N):
                     # print("{} {} {}".format(i, opt_act[i], j))
                     Tz = min(self.v_max,
-                             max(self.v_min, b_r[i] + self.gamma * z_range[j]))
+                             max(self.v_min, b_r[i] + z_range[j]))
 
                     bj = (Tz - self.v_min) / self.deltaZ
                     m_l, m_u = math.floor(bj), math.ceil(bj)
@@ -154,6 +165,14 @@ class C51agent:
         #loss.backward(retain_graph=True)  # 误差反向传播
         loss.backward()
         self.optimizer.step()
+        if test_flg:
+            z_eval = self.model(b_s)  # (batch-size * n_actions * N)
+            mb_size = z_eval.size(0)
+            # print("b_a shape:{}".format(b_a.shape))
+            z_eval = torch.stack(
+                [z_eval[i].index_select(dim=0, index=b_a[i, self.idx]) for i in range(mb_size)]).squeeze(1)
+            print("learned Z: {}".format(z_eval))
+            print("learned q: {}".format((z_eval * torch.tensor(self.Z)).sum()))
         # print('finish')
 
     def rand_peek(self):
@@ -168,18 +187,19 @@ class C51agent:
         with torch.no_grad():
             Q = self.model(state)
             # print(Q.shape)
-            Q = Q * torch.tensor(self.Z, dtype=torch.float32)
             Q = torch.squeeze(Q, 0)
+            Q = Q * torch.tensor(self.Z, dtype=torch.float32)
             Q = Q.sum(dim=1)
-            action = rand_argmax(Q)
+            action = Q.argmax()
             if verbose:
                 print("agent {} q-table is {}, choose action {}".format(self.idx, Q, action))
         return action
 
 
-
 start_time = time.time()
 training_time = 0
+
+max_r = -100
 
 
 class Multi_C51:
@@ -189,8 +209,8 @@ class Multi_C51:
     c51agents = []
     memory = deque()
 
-    def __init__(self, n_agents, ucb, n_states, n_actions, N, v_min, v_max, utf, eps, gamma, batch_size=256,
-                 alpha=0.001):
+    def __init__(self, n_agents, ucb, n_states, n_actions, N, v_min, v_max, utf, eps, gamma, batch_size=32,
+                 alpha=0.001, max_memory=50000, model_name='multi_c51'):
         self.n_agents = n_agents
         self.n_actions = n_agents
         self.n_states = n_agents
@@ -201,8 +221,9 @@ class Multi_C51:
         for i in range(n_agents):
             self.c51agents.append(C51agent(n_states, n_actions, N, v_min, v_max, eps, gamma, alpha, i))
         self.ucb = ucb
-        self.max_memory = 50000
+        self.max_memory = max_memory
         self.update_target_freq = utf
+        self.model_name = model_name
 
     def get_joint_opt_action(self, state):
         actions = [agent.get_opt_action(state) for agent in self.c51agents]
@@ -224,20 +245,19 @@ class Multi_C51:
     def update_target_models(self):
         # print("updating")
         for agent in self.c51agents:
-            # print(agent.model(0))
             agent.update_target_model()
 
     def save_checkpoint(self, folder_name, t, verbose):
         Folder = 'logs/' + folder_name
         if not os.path.exists(Folder):  # 是否存在这个文件夹
             os.makedirs(Folder)
-        Folder += '/' + str(t)
+        Folder += '/' + str(self.model_name)
         if not os.path.exists(Folder):
             os.makedirs(Folder)
         for idx, agent in zip(range(self.n_agents), self.c51agents):
             agent.save_checkpoint(Folder, idx)
         s = test(self, verbose)
-        f = open(Folder + "/result.txt", 'w')
+        f = open(Folder + "/result.txt", 'a')
         f.write(s)
         f.close()
 
@@ -257,18 +277,23 @@ class Multi_C51:
 def test(multi_c51, verbose):
     env = Env.chooce_the_game(args.dataset)
 
-    ep_r = 0
+    R = []
     if verbose:
         print("verbose test process: ")
     for i in range(10):
+        ep_r = 0
         s = env.reset()
         if verbose:
             print("episode {}".format(i+1))
         while True:
             a = multi_c51.test_opt_action(s, verbose)  # 根据dqn来接受现在的状态，得到一个行为
-            s_, r, done = env.step(a)  # 根据环境的行为，给出一个反馈
+            actions_v = []
+            for j in range(env.agent_num):
+                v = np.zeros(env.action_num)
+                v[a[j]] = 1
+                actions_v.append(v)
+            s_, r, done = env.step(actions_v)  # 根据环境的行为，给出一个反馈
 
-            # multi_c51.store_transition(s, a, r, s_, done, t)  # dqn存储现在的状态，行为，反馈，和环境导引的下一个状态
             if verbose:
                 print("transition(s:{},a:{},r:{},s_:{},dom:{})".format(s.argmax(), a, r, s_.argmax(), done))
 
@@ -277,15 +302,19 @@ def test(multi_c51, verbose):
             if done:
                 break
             s = s_  # 现在的状态赋值到下一个状态上去
+        R.append(ep_r)
+    ep_r = 0
+    for reward in R:
+        ep_r += reward
     ep_r /= 10
-    s = "total mean reward %f\n" % ep_r
+    s = "reward:{} \n total mean reward {}\n".format(R, ep_r)
 
     #print("peek the pi")
     #for i in range(env.agent_num):
     #    print("peeking agent {}".format(i))
     #    multi_c51.c51agents[i].rand_peek()
 
-    print("total mean reward %f" % ep_r)
+    print(s)
     s1 = "totol time is %f" % (time.time() - start_time)
     print(s1)
     s += s1 + '\n'
@@ -296,8 +325,10 @@ def test(multi_c51, verbose):
 
 
 def rand_argmax(tens):
-    max_idxs, = torch.where(tens == tens.max())
-    return np.random.choice(max_idxs)
+    #max_idxs, = torch.where(tens == tens.max())
+    # return np.random.choice(max_idxs)
+    max_idx = tens.argmax()
+    return max_idx
 
 
 args = parser.parse_args()
@@ -305,18 +336,28 @@ args = parser.parse_args()
 
 def train():
     env = Env.chooce_the_game(args.dataset)
-    multi_c51 = Multi_C51(env.agent_num, args.ucb, env.state_num, env.action_num,
-                          args.N, args.vmin, args.vmax, args.freq, args.eps, args.gamma)
+    multi_c51 = Multi_C51(n_agents=env.agent_num, ucb=args.ucb, n_states=env.state_num, n_actions=env.action_num,
+                          N=args.N, v_min=args.vmin, v_max=args.vmax, utf=args.freq, eps=args.eps, gamma=args.gamma,
+                          max_memory=args.cap, alpha=args.Lr, batch_size=args.batchsize, model_name=args.modelname)
 
     t = 0
     time_step = args.step
-    for i in range(args.episode):
+    max_episode = args.episode
+    if test_flg:
+        max_episode = 1
+    for i in range(max_episode):
         s = env.reset()
         ep_r = 0
         while True:
             a = multi_c51.get_joint_action(s)  # 根据dqn来接受现在的状态，得到一个行为
-            s_, r, done = env.step(a)  # 根据环境的行为，给出一个反馈
-
+            actions_v = []
+            for j in range(env.agent_num):
+                v = np.zeros(env.action_num)
+                v[a[j]] = 1
+                actions_v.append(v)
+            s_, r, done = env.step(actions_v)  # 根据环境的行为，给出一个反馈
+            global max_r
+            max_r = max(r, max_r)
             t += 1
             multi_c51.store_transition(s, a, r, s_, done, t)  # dqn存储现在的状态，行为，反馈，和环境导引的下一个状态
             # print((s, a, r, s_, done, t))
@@ -331,6 +372,7 @@ def train():
 
         if i % 1000 == 0:
             print("at episode %d" % i)
+            print("max_r = {}".format(max_r))
             multi_c51.save_checkpoint(args.path, t, args.verbose)
             # test(multi_c51, args.verbose)
 
